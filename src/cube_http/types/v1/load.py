@@ -121,6 +121,12 @@ class V1LoadResponse(ResponseModel):
     )
 
 
+class V1LoadResponseContinueWait(ResponseModel):
+    error: Literal["Continue wait"] = Field(
+        description="The request exceeded the continueWaitTimeout and should be retried. https://cube.dev/docs/product/apis-integrations/rest-api#continue-wait",
+    )
+
+
 V1LoadRequestQueryFilterOperator = Literal[
     "equals",
     "notEquals",

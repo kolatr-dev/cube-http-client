@@ -11,6 +11,7 @@ from .types.v1.load import (
     V1LoadRequestQuery,
     V1LoadRequestQueryDict,
     V1LoadResponse,
+    V1LoadResponseContinueWait,
     V1LoadRequest,
 )
 from .types.v1.meta import V1MetaResponse
@@ -46,21 +47,28 @@ class Client(BaseClient):
     """Synchronous HTTP client"""
 
     _client: httpx.Client
+    _max_continue_wait_retries: Optional[int]
 
     def __init__(self, options: ClientOptions[httpx.Client]) -> None:
         super().__init__(httpx.Client, httpx.HTTPTransport, options)
+        self._max_continue_wait_retries = options.get(
+            "max_continue_wait_retries"
+        )
 
     @cached_property
     def v1(self) -> "_V1":
-        return Client._V1(self._client)
+        return Client._V1(self._client, self._max_continue_wait_retries)
 
     class _V1:
         """
         Endpoint wrapper
         """
 
-        def __init__(self, client: httpx.Client) -> None:
+        def __init__(
+            self, client: httpx.Client, max_continue_wait_retries: Optional[int]
+        ) -> None:
             self._client = client
+            self._max_continue_wait_retries = max_continue_wait_retries
 
         def meta(
             self,
@@ -101,10 +109,27 @@ class Client(BaseClient):
             """
             body = V1LoadRequest.build(query).as_request_body()
             req = self._client.build_request("POST", "/v1/load", json=body)
-            res = self._client.send(req)
-            if res.status_code == 200:
-                return V1LoadResponse.from_response(res)
-            raise V1LoadError.from_response(res)
+
+            retry_count = 0
+            while True:
+                res = self._client.send(req)
+                if res.status_code != 200:
+                    raise V1LoadError.from_response(res)
+
+                try:
+                    return V1LoadResponse.from_response(res)
+                except:
+                    try:
+                        V1LoadResponseContinueWait.from_response(res)
+                        # If we get here, it was a continue wait response
+                        if self._max_continue_wait_retries is not None:
+                            if retry_count >= self._max_continue_wait_retries:
+                                raise V1LoadError.from_response(res)
+                            retry_count += 1
+                        continue
+                    except:
+                        # If parsing continue wait also failed, raise original error
+                        raise V1LoadError.from_response(res)
 
         def sql(
             self,

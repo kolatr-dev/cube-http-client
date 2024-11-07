@@ -24,3 +24,6 @@ class ClientOptions(TypedDict, Generic[THttpClient]):
 
     http_client: NotRequired[THttpClient]
     """Optional HTTPX client to use for requests"""
+
+    max_continue_wait_retries: NotRequired[Union[int, None]]
+    """Maximum number of retries to attempt on failed continue wait requests. Defaults to None for infinite retries"""
