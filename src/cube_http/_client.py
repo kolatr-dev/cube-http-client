@@ -159,21 +159,26 @@ class AsyncClient(BaseClient):
     """Asynchronous HTTP client"""
 
     _client: httpx.AsyncClient
+    _max_continue_wait_retries: Optional[int]
 
     def __init__(self, options: ClientOptions[httpx.AsyncClient]) -> None:
         super().__init__(httpx.AsyncClient, httpx.AsyncHTTPTransport, options)
+        self._max_continue_wait_retries = options.get(
+            "max_continue_wait_retries"
+        )
 
     @cached_property
     def v1(self):
-        return AsyncClient._V1(self._client)
+        return AsyncClient._V1(self._client, self._max_continue_wait_retries)
 
     class _V1:
         """
         Endpoint wrapper
         """
 
-        def __init__(self, client: httpx.AsyncClient) -> None:
+        def __init__(self, client: httpx.AsyncClient, max_continue_wait_retries: Optional[int]) -> None:
             self._client = client
+            self._max_continue_wait_retries = max_continue_wait_retries
 
         async def meta(
             self,
@@ -204,8 +209,7 @@ class AsyncClient(BaseClient):
             Load data via Cube JSON Query.
 
             Parameters:
-                query: Either a single URL encoded Cube Query, or an array of queries
-                query_type: If multiple queries are passed in query for data blending, this must be set to `multi`
+                query: Cube query
 
             Returns:
                 V1LoadResponse: The response of the load request
@@ -215,10 +219,27 @@ class AsyncClient(BaseClient):
             """
             body = V1LoadRequest.build(query).as_request_body()
             req = self._client.build_request("POST", "/v1/load", json=body)
-            res = await self._client.send(req)
-            if res.status_code == 200:
-                return V1LoadResponse.from_response(res)
-            raise V1LoadError.from_response(res)
+
+            retry_count = 0
+            while True:
+                res = await self._client.send(req)
+                if res.status_code != 200:
+                    raise V1LoadError.from_response(res)
+
+                try:
+                    return V1LoadResponse.from_response(res)
+                except:
+                    try:
+                        V1LoadResponseContinueWait.from_response(res)
+                        # If we get here, it was a continue wait response
+                        if self._max_continue_wait_retries is not None:
+                            if retry_count >= self._max_continue_wait_retries:
+                                raise V1LoadError.from_response(res)
+                            retry_count += 1
+                        continue
+                    except:
+                        # If parsing continue wait also failed, raise original error
+                        raise V1LoadError.from_response(res)
 
         async def sql(
             self,
